@@ -26,3 +26,7 @@ displayed on the page itself.
 
 I will not reuse this code on another site without checking its rules and
 terms first.
+
+#TO DO Stage 6
+##Notes
+An early version of the page-discovery logic followed the site's "next" link with no upper bound, intending to stop after 3 pages but never actually enforcing that limit in code. Running it caused the script to crawl the entire site — all 50 catalogue pages and 1,000 book links — instead of the intended 3 pages and 60 books. I caught this by comparing the printed catalogue_pages= count against what the assignment expected, added an explicit MAX_PAGES = 3 check to the loop, and reran it to confirm the corrected output (catalogue_pages=3 discovered=60 unique_urls=60). Lesson: "follow the next link" needs an explicit stopping condition in code, not just a comment saying where it should stop.
