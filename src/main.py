@@ -23,6 +23,7 @@ Run it with:
 
 import os
 import time
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import requests
@@ -65,6 +66,9 @@ def fetch_page(url):
     if response.status_code != 200:
         raise Exception(f"Fetch failed: got status {response.status_code} for {url}")
 
+    # The site serves UTF-8, but requests sometimes guesses the wrong encoding
+    # on its own (seen as "Â£" instead of "£" in prices). Force UTF-8 explicitly.
+    response.encoding = "utf-8"
     html = response.text
 
     os.makedirs(CACHE_FOLDER, exist_ok=True)
@@ -107,36 +111,93 @@ def find_next_page_url(html, page_url):
 
 def discover_all_book_links():
     """Walks the catalogue pages (following 'next' links) and collects every
-    unique book URL found along the way."""
-    all_links = []
+    unique book URL found along the way, remembering which catalogue page
+    each book was first discovered on (its source_page)."""
+    discovered = []  # list of (book_url, source_page) tuples, in order found
     page_count = 0
     current_url = START_URL
 
-    # Stop at MAX_PAGES even if the site has a "next" link beyond that -
-    # our scope is the first 3 catalogue pages only, never more.
     while current_url and page_count < MAX_PAGES:
         html = fetch_page(current_url)
         page_count += 1
 
         links_on_this_page = find_book_links(html, current_url)
-        all_links.extend(links_on_this_page)
+        for link in links_on_this_page:
+            discovered.append((link, current_url))
 
         current_url = find_next_page_url(html, current_url)
 
-    # Remove duplicates, while keeping the order they were first found in.
-    unique_links = list(dict.fromkeys(all_links))
+    # Remove duplicates by URL, keeping the first (url, source_page) pair seen.
+    seen = {}
+    for url, source_page in discovered:
+        if url not in seen:
+            seen[url] = source_page
+    unique_books = list(seen.items())  # list of (url, source_page)
 
-    print(f"catalogue_pages={page_count} discovered={len(all_links)} "
-          f"unique_urls={len(unique_links)}")
-    return unique_links
+    print(f"catalogue_pages={page_count} discovered={len(discovered)} "
+          f"unique_urls={len(unique_books)}")
+    return unique_books
+
+
+def extract_book_record(book_url, source_page):
+    """Fetches one book's page and pulls out the 8 required raw fields."""
+    html = fetch_page(book_url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    title_tag = soup.select_one("div.product_main h1")
+    title = title_tag.get_text(strip=True) if title_tag else None
+
+    price_tag = soup.select_one("p.price_color")
+    price_text = price_tag.get_text(strip=True) if price_tag else None
+
+    availability_tag = soup.select_one("p.instock.availability")
+    availability_text = availability_tag.get_text(strip=True) if availability_tag else None
+
+    # The star rating is stored as a CSS class, e.g. class="star-rating Three"
+    rating_tag = soup.select_one("p.star-rating")
+    rating_text = None
+    if rating_tag:
+        classes = rating_tag.get("class", [])
+        # classes looks like ["star-rating", "Three"] - we want the word, not "star-rating"
+        rating_words = [c for c in classes if c != "star-rating"]
+        rating_text = rating_words[0] if rating_words else None
+
+    # Not every book has a description. If it's missing, we store null -
+    # never invent text that wasn't actually on the page.
+    # NOTE: select_one() with "~" should only grab the FIRST matching <p>,
+    # but we saw duplicated text in testing - using find_next_sibling
+    # instead is more precise: "the very next <p> right after this div,
+    # nothing else."
+    description_heading = soup.select_one("div#product_description")
+    description = None
+    if description_heading:
+        description_tag = description_heading.find_next_sibling("p")
+        if description_tag:
+            description = description_tag.get_text(strip=True)
+
+    return {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
 
 
 def main():
-    book_urls = discover_all_book_links()
-    # Just a peek, so we can see it actually worked - not the full list.
-    print("First 3 book URLs found:")
-    for url in book_urls[:3]:
-        print(f"  {url}")
+    unique_books = discover_all_book_links()
+
+    records = []
+    for book_url, source_page in unique_books:
+        record = extract_book_record(book_url, source_page)
+        records.append(record)
+
+    print(f"detail_pages={len(records)}")
+    print("\nOne complete raw record, as proof:")
+    print(records[0])
 
 
 if __name__ == "__main__":
