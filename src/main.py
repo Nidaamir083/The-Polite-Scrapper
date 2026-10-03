@@ -23,6 +23,7 @@ Run it with:
 
 import os
 import re
+import csv
 import json
 import time
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ MAX_PAGES = 3  # the assignment's scope: only the first 3 catalogue pages, ever
 
 OUTPUT_FOLDER = "output"
 BOOKS_FILE = os.path.join(OUTPUT_FOLDER, "books.json")
+BOOKS_CSV_FILE = os.path.join(OUTPUT_FOLDER, "books.csv")
 ERRORS_FILE = os.path.join(OUTPUT_FOLDER, "errors.json")
 REPORT_FILE = os.path.join(OUTPUT_FOLDER, "run-report.json")
 
@@ -284,6 +286,33 @@ def save_json(path, data):
         json.dump(data, f, indent=2)
 
 
+def save_csv(path, books_list):
+    """Exports the validated book records to a flat CSV file.
+
+    Every field in BookRecord is already a simple string, number, or null -
+    there are no nested objects to flatten. The one thing worth noting:
+    `description` can contain commas, quotes, and line breaks (since it's
+    free-form text copied from the page) - Python's csv module handles
+    quoting that safely on its own, so no manual escaping is needed.
+    A `null` description becomes an empty cell in the CSV, since CSV has
+    no real concept of "null" the way JSON does.
+    """
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    if not books_list:
+        return
+
+    fieldnames = list(books_list[0].keys())
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for book in books_list:
+            # Turn None into "" - CSV doesn't have a null, just an empty cell.
+            row = {key: (value if value is not None else "") for key, value in book.items()}
+            writer.writerow(row)
+
+
 def main():
     start_time = datetime.now(timezone.utc)
     global cache_hit_count
@@ -325,6 +354,7 @@ def main():
 
     books_list = list(valid_records.values())
     save_json(BOOKS_FILE, books_list)
+    save_csv(BOOKS_CSV_FILE, books_list)
     save_json(ERRORS_FILE, errors)
 
     end_time = datetime.now(timezone.utc)
@@ -345,6 +375,7 @@ def main():
     print(f"\n===== RUN REPORT =====")
     print(json.dumps(report, indent=2))
     print(f"\nbooks.json: {len(books_list)} records")
+    print(f"books.csv: {len(books_list)} records")
     print(f"errors.json: {len(errors)} records")
     print(f"run-report.json saved to: {REPORT_FILE}")
 
