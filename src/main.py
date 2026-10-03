@@ -22,12 +22,15 @@ Run it with:
 """
 
 import os
+import re
+import json
 import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from pydantic import BaseModel, ValidationError
 
 # Our honest, polite user-agent. Replace the URL with your own repo link.
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/Nidaamir083/The-Polite-Scrapper)"
@@ -38,6 +41,25 @@ DELAY_BETWEEN_REQUESTS = 0.5  # half a second, as the assignment requires
 
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
 MAX_PAGES = 3  # the assignment's scope: only the first 3 catalogue pages, ever
+
+OUTPUT_FOLDER = "output"
+BOOKS_FILE = os.path.join(OUTPUT_FOLDER, "books.json")
+ERRORS_FILE = os.path.join(OUTPUT_FOLDER, "errors.json")
+
+
+class BookRecord(BaseModel):
+    """The exact shape a record must have to be considered 'clean and safe
+    to store'. Any record that doesn't fit this shape is rejected, not
+    silently accepted."""
+    title: str
+    product_url: str          # the canonical URL - this book's identity
+    price_text: str           # the original text, e.g. "£51.77"
+    price_gbp: float          # the cleaned number, e.g. 51.77
+    availability_text: str
+    rating_text: str | None
+    description: str | None   # allowed to be missing - stored as null, never invented
+    source_page: str
+    fetched_at: str
 
 
 def cache_filename_for(url):
@@ -187,17 +209,70 @@ def extract_book_record(book_url, source_page):
     }
 
 
+def parse_price(price_text):
+    """Turns '£51.77' into the number 51.77. Returns None if no number is found."""
+    if not price_text:
+        return None
+    match = re.search(r"[\d]+\.?[\d]*", price_text)
+    return float(match.group()) if match else None
+
+
+def validate_record(raw_record):
+    """Checks one raw record against our schema.
+    Returns (valid_record_dict, None) if it passes,
+    or (None, error_reason) if it fails."""
+    price_gbp = parse_price(raw_record.get("price_text"))
+
+    candidate = dict(raw_record)
+    candidate["price_gbp"] = price_gbp
+
+    try:
+        validated = BookRecord(**candidate)
+        return validated.model_dump(), None
+    except ValidationError as error:
+        # Keep the error message short and readable, not the full Pydantic dump.
+        reason = "; ".join(f"{err['loc'][0]}: {err['msg']}" for err in error.errors())
+        return None, reason
+
+
+def save_json(path, data):
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
 def main():
     unique_books = discover_all_book_links()
 
-    records = []
-    for book_url, source_page in unique_books:
-        record = extract_book_record(book_url, source_page)
-        records.append(record)
+    # Use a dict keyed by the canonical product_url, so even if a URL were
+    # somehow processed twice, it still counts once - this is what keeps
+    # output/books.json idempotent (same 60 records every run, never 120).
+    valid_records = {}
+    errors = []
 
-    print(f"detail_pages={len(records)}")
-    print("\nOne complete raw record, as proof:")
-    print(records[0])
+    for book_url, source_page in unique_books:
+        raw_record = extract_book_record(book_url, source_page)
+
+        valid_record, error_reason = validate_record(raw_record)
+        if valid_record:
+            valid_records[valid_record["product_url"]] = valid_record
+        else:
+            errors.append({"product_url": book_url, "reason": error_reason,
+                            "raw_record": raw_record})
+
+    books_list = list(valid_records.values())
+    save_json(BOOKS_FILE, books_list)
+    save_json(ERRORS_FILE, errors)
+
+    print(f"detail_pages={len(unique_books)}")
+    print(f"valid_records={len(books_list)}")
+    print(f"invalid_records={len(errors)}")
+    print(f"Saved to: {BOOKS_FILE}")
+    print(f"Errors (if any) saved to: {ERRORS_FILE}")
+
+    if books_list:
+        print("\nOne complete clean record, as proof:")
+        print(books_list[0])
 
 
 if __name__ == "__main__":
