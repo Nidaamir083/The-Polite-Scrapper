@@ -45,6 +45,25 @@ MAX_PAGES = 3  # the assignment's scope: only the first 3 catalogue pages, ever
 OUTPUT_FOLDER = "output"
 BOOKS_FILE = os.path.join(OUTPUT_FOLDER, "books.json")
 ERRORS_FILE = os.path.join(OUTPUT_FOLDER, "errors.json")
+REPORT_FILE = os.path.join(OUTPUT_FOLDER, "run-report.json")
+
+# Set this to True ONLY to prove Stage 5 works (adds one fake book URL on
+# purpose, so you can see the run survive it). Set back to False afterward -
+# we never test failure by hammering the real site, only by breaking our
+# own side on purpose.
+INJECT_TEST_FAILURE = False
+
+# How many cached pages we read this run, vs. how many we actually fetched.
+# (Tracked with a simple counter, updated inside fetch_page.)
+cache_hit_count = 0
+
+
+class FetchError(Exception):
+    """Raised when a page could not be fetched, after any allowed retry."""
+    def __init__(self, url, reason):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"{url}: {reason}")
 
 
 class BookRecord(BaseModel):
@@ -71,38 +90,62 @@ def cache_filename_for(url):
     return os.path.join(CACHE_FOLDER, safe_name)
 
 
-def fetch_page(url):
+def fetch_page(url, is_retry=False):
     """Returns the page's HTML text. Uses the cache if we already have it.
-    Only waits politely before a REAL request - cached pages need no delay."""
+    Only waits politely before a REAL request - cached pages need no delay.
+
+    On a timeout or server error (5xx), retries ONCE after a short wait.
+    A 404 (doesn't exist) or 403 (blocked) is never retried - asking again
+    won't change the answer, and retrying a 403 is how a polite robot
+    becomes a pest.
+    """
+    global cache_hit_count
     cache_path = cache_filename_for(url)
 
-    if os.path.exists(cache_path):
+    if os.path.exists(cache_path) and not is_retry:
         with open(cache_path, "r", encoding="utf-8") as f:
             html = f.read()
         print(f"CACHE HIT: {cache_path} ({len(html)} bytes)")
+        cache_hit_count += 1
         return html
 
     headers = {"User-Agent": USER_AGENT}
-    response = requests.get(url, headers=headers, timeout=TIMEOUT_SECONDS)
+    try:
+        response = requests.get(url, headers=headers, timeout=TIMEOUT_SECONDS)
+    except requests.exceptions.Timeout:
+        if not is_retry:
+            print(f"   Timeout on {url}, waiting and retrying once...")
+            time.sleep(1)
+            return fetch_page(url, is_retry=True)
+        raise FetchError(url, "timed out twice")
+    except requests.exceptions.RequestException as error:
+        raise FetchError(url, f"network error: {error}")
 
-    if response.status_code != 200:
-        raise Exception(f"Fetch failed: got status {response.status_code} for {url}")
+    status = response.status_code
 
-    # The site serves UTF-8, but requests sometimes guesses the wrong encoding
-    # on its own (seen as "Â£" instead of "£" in prices). Force UTF-8 explicitly.
-    response.encoding = "utf-8"
-    html = response.text
+    if status == 200:
+        response.encoding = "utf-8"
+        html = response.text
 
-    os.makedirs(CACHE_FOLDER, exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        f.write(html)
+        os.makedirs(CACHE_FOLDER, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
-    print(f"FETCH: {url} -> saved to {cache_path} ({len(html)} bytes)")
+        print(f"FETCH: {url} -> saved to {cache_path} ({len(html)} bytes)")
+        time.sleep(DELAY_BETWEEN_REQUESTS)
+        return html
 
-    # Be polite: wait before the NEXT real request. No need to wait after a
-    # cache hit, since that never left our own computer.
-    time.sleep(DELAY_BETWEEN_REQUESTS)
-    return html
+    if status in (404, 403):
+        # Never retry these - a 404 won't exist on a second try, and
+        # retrying a 403 is rude, not helpful.
+        raise FetchError(url, f"status {status}, not retried")
+
+    if status >= 500 and not is_retry:
+        print(f"   Server error {status} on {url}, waiting and retrying once...")
+        time.sleep(1)
+        return fetch_page(url, is_retry=True)
+
+    raise FetchError(url, f"unexpected status {status}")
 
 
 def find_book_links(html, page_url):
@@ -242,16 +285,36 @@ def save_json(path, data):
 
 
 def main():
-    unique_books = discover_all_book_links()
+    start_time = datetime.now(timezone.utc)
+    global cache_hit_count
+    cache_hit_count = 0  # reset in case main() is ever called more than once
 
-    # Use a dict keyed by the canonical product_url, so even if a URL were
-    # somehow processed twice, it still counts once - this is what keeps
-    # output/books.json idempotent (same 60 records every run, never 120).
+    try:
+        unique_books = discover_all_book_links()
+    except FetchError as error:
+        # Even a catalogue page itself could fail - if so, we can't continue
+        # at all, so this is reported honestly rather than crashing silently.
+        print(f"FATAL: could not load the catalogue pages: {error}")
+        unique_books = []
+
+    # Stage 5 proof: deliberately add one book URL that does not exist.
+    if INJECT_TEST_FAILURE:
+        fake_url = "https://books.toscrape.com/catalogue/this-book-does-not-exist_0000/index.html"
+        unique_books.append((fake_url, "manually injected for testing"))
+        print(f"\n[TEST] Injected a fake URL on purpose: {fake_url}\n")
+
     valid_records = {}
     errors = []
+    failed_pages = []
 
     for book_url, source_page in unique_books:
-        raw_record = extract_book_record(book_url, source_page)
+        try:
+            raw_record = extract_book_record(book_url, source_page)
+        except FetchError as error:
+            # One bad page must not kill the run: log it and move on.
+            print(f"   FAILED PAGE: {error}")
+            failed_pages.append({"url": book_url, "reason": error.reason})
+            continue
 
         valid_record, error_reason = validate_record(raw_record)
         if valid_record:
@@ -264,11 +327,26 @@ def main():
     save_json(BOOKS_FILE, books_list)
     save_json(ERRORS_FILE, errors)
 
-    print(f"detail_pages={len(unique_books)}")
-    print(f"valid_records={len(books_list)}")
-    print(f"invalid_records={len(errors)}")
-    print(f"Saved to: {BOOKS_FILE}")
-    print(f"Errors (if any) saved to: {ERRORS_FILE}")
+    end_time = datetime.now(timezone.utc)
+    duration_seconds = round((end_time - start_time).total_seconds(), 2)
+
+    report = {
+        "start_time": start_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "duration_seconds": duration_seconds,
+        "pages_attempted": len(unique_books),
+        "cache_hits": cache_hit_count,
+        "valid_records": len(books_list),
+        "invalid_records": len(errors),
+        "failed_pages": len(failed_pages),
+        "failed_page_details": failed_pages,
+    }
+    save_json(REPORT_FILE, report)
+
+    print(f"\n===== RUN REPORT =====")
+    print(json.dumps(report, indent=2))
+    print(f"\nbooks.json: {len(books_list)} records")
+    print(f"errors.json: {len(errors)} records")
+    print(f"run-report.json saved to: {REPORT_FILE}")
 
     if books_list:
         print("\nOne complete clean record, as proof:")
