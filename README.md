@@ -1,7 +1,5 @@
 # The Polite Scraper
 
-FlyRank Internship · Backend Track · Week 5 · Assignment A9
-
 A small, polite scraping pipeline that downloads the first three catalogue
 pages of [Books to Scrape](https://books.toscrape.com), visits all 60 book
 pages, and turns messy HTML into clean, schema-checked JSON — without
@@ -11,11 +9,7 @@ crashing on a broken page, and with an honest report at the end of every run.
 
 **Site:** https://books.toscrape.com
 
-**Why this site:** The site's homepage explicitly states: "This is a demo website
-for web scraping purposes. Prices and ratings here were randomly assigned and
-have no real meaning." This confirms it is a sandbox built specifically for
-scraping practice, not a real business whose data I'd be taking without
-permission.
+**Why this site:** The site's homepage explicitly states: "Warning! This is a demo website for web scraping purposes. Prices and ratings here were randomly assigned and have no real meaning". This confirms it is a sandbox built specifically for scraping practice, not a real business whose data I'd be taking without permission.
 
 **Scope:** The first 3 catalogue pages only, and the ~60 individual book pages
 linked from them. No other pages on the site will be visited.
@@ -30,6 +24,10 @@ of a robots.txt file.
 **What data is collected:** For each book: title, product URL, price, stock
 availability, star rating, and description — all data already publicly
 displayed on the page itself.
+
+**Why this is appropriate:** Because the site exists specifically for scraping
+practice and contains no real business data, scraping it does not take
+anything from a real company or violate anyone's actual interests.
 
 I will not reuse this code on another site without checking its rules and
 terms first.
@@ -103,8 +101,9 @@ A record that doesn't fit this shape is rejected and written to
 
 This is actual output from a real run, with one deliberately fake book URL
 added on purpose to prove the pipeline survives a broken page without
-crashing (see "Stage 5" testing in `BUILDLOG` below — the fake URL was
-removed before the final commit):
+crashing. The fake URL was added temporarily via the `INJECT_TEST_FAILURE`
+flag in `src/main.py`, then removed before the final commit — only the
+output below is kept as proof:
 
 ```json
 {
@@ -160,10 +159,10 @@ render.
    never invent text" principle this assignment is built around.
 
 3. **Small-scale retry logic.** Stage 5's retry rule is a single retry after
-   a flat 1-second wait — simple and working, as the assignment asks for at
-   this stage. Real production scraping (next week's assignment, A16) calls
-   for proper exponential backoff and respecting a `Retry-After` header,
-   which this version does not yet implement.
+a flat 1-second wait — simple and working, as the assignment asks for at
+this stage. The assignment brief itself notes that proper exponential
+backoff and respecting a `Retry-After` header are the focus of next week's
+follow-up assignment, which this version does not yet implement.
 
 ## Ethics note
 
