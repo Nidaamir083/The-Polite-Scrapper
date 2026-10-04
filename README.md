@@ -1,5 +1,7 @@
 # The Polite Scraper
 
+FlyRank Internship · Backend Track · Week 5 · Assignment A9
+
 A small, polite scraping pipeline that downloads the first three catalogue
 pages of [Books to Scrape](https://books.toscrape.com), visits all 60 book
 pages, and turns messy HTML into clean, schema-checked JSON — without
@@ -9,7 +11,11 @@ crashing on a broken page, and with an honest report at the end of every run.
 
 **Site:** https://books.toscrape.com
 
-**Why this site:** The site's homepage explicitly states: "Warning! This is a demo website for web scraping purposes. Prices and ratings here were randomly assigned and have no real meaning". This confirms it is a sandbox built specifically for scraping practice, not a real business whose data I'd be taking without permission.
+**Why this site:** The site's homepage explicitly states: "This is a demo website
+for web scraping purposes. Prices and ratings here were randomly assigned and
+have no real meaning." This confirms it is a sandbox built specifically for
+scraping practice, not a real business whose data I'd be taking without
+permission.
 
 **Scope:** The first 3 catalogue pages only, and the ~60 individual book pages
 linked from them. No other pages on the site will be visited.
@@ -24,10 +30,6 @@ of a robots.txt file.
 **What data is collected:** For each book: title, product URL, price, stock
 availability, star rating, and description — all data already publicly
 displayed on the page itself.
-
-**Why this is appropriate:** Because the site exists specifically for scraping
-practice and contains no real business data, scraping it does not take
-anything from a real company or violate anyone's actual interests.
 
 I will not reuse this code on another site without checking its rules and
 terms first.
@@ -61,6 +63,7 @@ the cache is cleared.
 - `output/books.json` — 60 clean, validated book records
 - `output/errors.json` — any record that failed validation, with a reason (empty on a normal run)
 - `output/run-report.json` — honest numbers from the run (see below)
+- `ouput/books.csv` - produce books.csv from the validated records
 
 ## Record schema
 
@@ -159,10 +162,59 @@ render.
    never invent text" principle this assignment is built around.
 
 3. **Small-scale retry logic.** Stage 5's retry rule is a single retry after
-a flat 1-second wait — simple and working, as the assignment asks for at
-this stage. The assignment brief itself notes that proper exponential
-backoff and respecting a `Retry-After` header are the focus of next week's
-follow-up assignment, which this version does not yet implement.
+   a flat 1-second wait — simple and working, as the assignment asks for at
+   this stage. Real production scraping (next week's assignment, A16) calls
+   for proper exponential backoff and respecting a `Retry-After` header,
+   which this version does not yet implement.
+
+## Optional extras completed
+
+Beyond the 7 required stages, I completed two of the brief's optional extras:
+
+### CSV export
+
+`output/books.csv` holds the same 60 validated records as `books.json`, in a
+flat CSV format. No fields required real "flattening" — every field in the
+schema is already a plain string, number, or null — the one thing worth
+noting is that a `null` description becomes an empty cell, since CSV has no
+concept of `null` the way JSON does.
+
+### Parser unit tests (5+ required)
+
+`src/test_main.py` has 6 unit tests, run with fixtures (small, fake HTML
+snippets) rather than the live site, so they run instantly with no internet
+dependency:
+
+1. Price text → number conversion (`"£51.77"` → `51.77`)
+2. A missing price returns `None`, never a guess
+3. A relative URL (`../../book/index.html`) becomes a full absolute URL
+4. A missing description becomes `null`, never invented text
+5. Duplicate book links are correctly reduced to one unique URL
+6. A page missing price, availability, and rating entirely does not crash
+   the program, and a record with no price is correctly rejected by the
+   schema rather than silently stored
+
+Real output, `pytest src/test_main.py -v`:
+
+```
+collected 6 items
+
+test_main.py::test_parse_price_converts_text_to_number PASSED        [ 16%]
+test_main.py::test_parse_price_handles_missing_price PASSED          [ 33%]
+test_main.py::test_relative_url_becomes_absolute PASSED              [ 50%]
+test_main.py::test_missing_description_becomes_null PASSED           [ 66%]
+test_main.py::test_duplicate_book_links_are_removed PASSED           [ 83%]
+test_main.py::test_malformed_page_does_not_crash PASSED              [100%]
+
+6 passed in 0.88s
+```
+
+### Note on the optional AI rematch
+
+I attempted the bonus "AI rematch" stage but found it difficult to write a
+prompt purely from memory without unintentionally echoing either my own
+README or the assignment brief's wording. Rather than submit a prompt that
+wasn't genuinely independent, I chose to skip this optional stage.
 
 ## Ethics note
 
@@ -180,3 +232,8 @@ not everything a page happens to contain.
 - `output/run-report.json` — the latest run's honest numbers
 - `requirements.txt` — Python dependencies
 - `cache/` — saved HTML pages (not committed — see `.gitignore`)
+- `output/books.csv` — the same 60 records as a flat CSV; `null` descriptions
+  become empty cells, since CSV has no concept of `null`
+- `src/test_main.py` — 6 unit tests (price normalization, URL conversion,
+  missing description, duplicate removal, malformed-input handling), using
+  fixtures instead of the live site. Run with: `pytest src/test_main.py -v`
